@@ -9,9 +9,18 @@ import (
 	"os"
 	"strings"
 	"time"
+	"math/rand"
 )
 
+type A74Conn struct {
+	external *net.TCPConn
+	a74 *net.TCPConn
+	id uint64
+}
+
 var run uint8 = 1
+var connected uint8 = 0
+
 
 func readInput(ch chan<- string) {
 	reader := bufio.NewReader(os.Stdin)
@@ -28,42 +37,86 @@ func readInput(ch chan<- string) {
 //goroutines
 
 func A74socket() {
-	port := "24765"
+	//port := "24765"
 }
 
 func extSocket() {
-	port := "25022"
-}
-
-func controllerSocket(ctrCh <-chan string) {
-	// Define the address and port to listen on
+	//port := ""
 	var port uint16
-	port = 24666
-	var connected = false
-	expectedData := ""
+	port = 25008
 	netTCPAddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), port))
 	listener, err := net.ListenTCP("tcp", netTCPAddr)
+	if err != nil {
+		fmt.Println("ERROR: extSocket | net.ListenTCP()")
+	}
 	defer func(listener *net.TCPListener) {
 		err := listener.Close()
 		if err != nil {
 			fmt.Println("ERROR: controllerSocket | listener.Close()")
 		}
 	}(listener)
-	if err != nil {
-		fmt.Println("ERROR: controllerSocket | net.Listen()")
+
+	var conn *net.TCPConn
+	for run == 1 {
+		for connected == 1 && run == 1 {
+			err := listener.SetDeadline(time.Now().Local().Add(time.Millisecond * 20))
+			if err != nil {
+				fmt.Println("ERROR: controllerSocket | listener.SetDeadline()")
+				return
+			}
+			conn, err = listener.AcceptTCP()
+			if err != nil {
+				fmt.Println("ERROR: controllerSocket | listener.Accept()")
+				return
+			} else {
+				conn := A74Conn{external: conn, id: rand.Uint64()}
+				
+				go extConn()
+			}
+		}
+
 	}
+
+
+
+}
+
+func extConn(A74Conn) {
+
+}
+
+func controllerSocket(ctrlToExtSocks chan<- A74Conn, extToCtrlSocks <-chan A74Conn) {
+	// Define the address and port to listen on
+	var port uint16
+	port = 24666
+	expectedData := ""
+	netTCPAddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), port))
+	listener, err := net.ListenTCP("tcp", netTCPAddr)
+	if err != nil {
+		fmt.Println("ERROR: controllerSocket | net.ListenTCP()")
+	}
+	defer func(listener *net.TCPListener) {
+		err := listener.Close()
+		if err != nil {
+			fmt.Println("ERROR: controllerSocket | listener.Close()")
+		}
+	}(listener)
+
+	var conn *net.TCPConn
+	_ = conn.SetKeepAlive(true)
+	_ = conn.SetKeepAlivePeriod(time.Second)
+
 
 	// Create a TCP listener on the specified address and port
 	for run == 1 {
 		// Wait for a client to connect
-		var conn net.Conn
 		for run == 1 {
 			err := listener.SetDeadline(time.Now().Local().Add(time.Second))
 			if err != nil {
 				fmt.Println("ERROR: controllerSocket | listener.SetDeadline()")
 				return
 			}
-			conn, err = listener.Accept()
+			conn, err = listener.AcceptTCP()
 			if err != nil {
 				fmt.Println("ERROR: controllerSocket | listener.Accept()")
 				return
@@ -71,10 +124,10 @@ func controllerSocket(ctrCh <-chan string) {
 				break
 			}
 		}
-		defer func(conn net.Conn) {
+		defer func(conn *net.TCPConn) {
 			err := conn.Close()
 			if err != nil {
-				fmt.Println("ERROR: controllerSocket | defer conn.Close()")
+
 			}
 		}(conn)
 
@@ -87,7 +140,7 @@ func controllerSocket(ctrCh <-chan string) {
 
 		receivedData, _ := reader.ReadString('\n')
 		if strings.TrimRight(receivedData, "\n") == strings.TrimRight(expectedData, "\n") {
-			connected = true
+			connected = 1
 			_, err := writer.WriteString("ok")
 			if err != nil {
 				fmt.Sprintln()
@@ -95,28 +148,25 @@ func controllerSocket(ctrCh <-chan string) {
 			writer.Flush()
 			fmt.Println("INFO: A74Client connected")
 			//authentication done
-			for connected && run == 1 {
-				//read from control channel to handle case of application termination
+			sh := make([]byte, 1024)
+			for connected == 1 && run == 1 {
+				//read from extToCtrlSocks channel, if there is a new A74Conn struct in there tell the controller to open a tcp connection,
+				//listen for that tcp connection then handle the entire A74Conn struct 
 				select {
-				case i := <-ctrCh:
-					if strings.Contains(i, "open") {
-						//tell A74client to open connection
-						writer.WriteString("open")
-						writer.Flush()
-					}
+				case
+
 				}
 
-				//read from tcp connection for
-				n = reader.Buffered()
-				if n > 0 {
-					_, err1 := reader.ReadString('\n')
-					if err1 != nil {
-						if err1 == io.EOF {
-							connected = false
-							break
-						} else {
-							fmt.Println("ERROR: controllerSocket | read from A74 client | error not EOF")
-						}
+				//check if connection is alive
+				_, err := conn.Read(sh) //BLOCKING!!!!!!!
+				if err != nil {
+					if err == io.EOF {
+						connected = 0
+						reader = nil
+						writer = nil
+						break
+					} else {
+						fmt.Println("ERROR: controllerSocket | error keeping connection alive")
 					}
 				}
 			}
@@ -128,13 +178,21 @@ func controllerSocket(ctrCh <-chan string) {
 	return
 }
 
-func controller(ch <-chan string, ctr chan<- int) {
-
+func controller(ch <-chan string) {
+	var cmd string
+	for {
+		cmd = <-ch
+		if strings.Contains(strings.ToLower(cmd), "stop") {
+			run = 0
+			connected = 0
+			return
+		}
+	}
 }
 
 func main() {
 	//input from std
-	inputCh := make(chan string)
+	/*inputCh := make(chan string)
 	//output to std
 	outputCh := make(chan string)
 	//ctrl to ctrlSocket
@@ -142,5 +200,7 @@ func main() {
 	//ctrlSocket to ctrl
 	ctrSockCh := make(chan int)
 	slaveCh := make(chan int)
+	*/
 
+	fmt.Println("hi")
 }
